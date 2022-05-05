@@ -1,4 +1,4 @@
-# aws-ai-appflow-veeva-integation
+# aws-ai-appflow-veeva-integration
 An integration between Veeva Vault and AWS, levaraging Amazon AppFlow to import assets and AWS AI services to intelligently analyze images, PDFs and audio assets.
 
 # Background
