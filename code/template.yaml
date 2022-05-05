@@ -20,12 +20,14 @@ Parameters:
     Description: Enter Veeva domain name you want to connect to.
     MaxLength: 30
     MinLength: 3
+    NoEcho: True
 
   VeevaDomainUserNameParameter:
     Type: String
     Description: Enter the user name of the domain.
     MaxLength: 30
     MinLength: 3
+    NoEcho: True
 
   VeevaDomainPasswordParameter:
     Type: String
@@ -60,46 +62,40 @@ Metadata:
 Resources:
   AVAIBucket:
     Type: AWS::S3::Bucket
-
-  AVAIPollerRole:
-    Type: "AWS::IAM::Role"
     Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
+      BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - BucketKeyEnabled: true
+              ServerSideEncryptionByDefault:
+                SSEAlgorithm: 'aws:kms'
+                KMSMasterKeyID: !Join [ ":", [ "arn:aws:kms", !Ref "AWS::Region", !Ref "AWS::AccountId", "alias/aws/s3"]]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  AVAIBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AVAIBucket
+      PolicyDocument: 
+        Version: 2012-10-17
         Statement:
-          - Effect: "Allow"
+          - Action: 
+              - s3:PutObject
+              - s3:AbortMultipartUpload
+              - s3:ListMultipartUploadParts
+              - s3:ListBucketMultipartUploads
+              - s3:GetBucketAcl
+              - s3:PutObjectAcl
+            Effect: Allow
             Principal:
               Service:
-                - lambda.amazonaws.com
-            Action: "sts:AssumeRole"
-      Path: "/"
-      Policies:
-        - PolicyName: "ReadWriteToS3"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: "Allow"
-                Action: "S3:PutObject"
-                Resource: !Sub
-                  - ${bucketARN}/*
-                  - { bucketARN: !GetAtt AVAIBucket.Arn }
-              - Effect: "Allow"
-                Action: "S3:GetObject"
-                Resource: !Sub
-                  - ${bucketARN}/*
-                  - { bucketARN: !GetAtt AVAIBucket.Arn }
-        - PolicyName: "WritetoSQS"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: "Allow"
-                Action:
-                  - "sqs:SendMessage"
-                  - "sqs:GetQueueUrl"
-                Resource: !GetAtt AVAIQueue.Arn
-
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+                - appflow.amazonaws.com
+            Resource:
+              - !GetAtt AVAIBucket.Arn
+              - !Join [ "/", [!GetAtt AVAIBucket.Arn, "*"]]
 
   AVAICustomFieldPopulatorRole:
     Type: "AWS::IAM::Role"
@@ -135,6 +131,18 @@ Resources:
                   - "sqs:SendMessage"
                   - "sqs:GetQueueUrl"
                 Resource: !GetAtt AVAIDeadLetterQueue.Arn
+        - PolicyName: "GetSecret"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "secretsmanager:GetSecretValue"
+                Resource: 
+                  - !Ref DomainSecret
+                  - !Ref DomainUsernameSecret
+                  - !Ref DomainPasswordSecret
+                  - !Ref CustomFieldSecret
 
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
@@ -218,8 +226,8 @@ Resources:
             Version: "2012-10-17"
             Statement:
               - Effect: "Allow"
-                Action: "es:*"
-                Resource: !GetAtt AVAIESDomain.Arn
+                Action: "es:ESHttp*"
+                Resource: !GetAtt AVAIOSDomain.Arn
         - PolicyName: "AccessDDBStream"
           PolicyDocument:
             Version: "2012-10-17"
@@ -277,27 +285,6 @@ Resources:
 
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-        - arn:aws:iam::aws:policy/AmazonEventBridgeReadOnlyAccess
-
-  AVAIPoller:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: AVAIPoller.lambda_handler
-      Description: "Lambda function to poll Veeva api to pull in documents"
-      Runtime: python3.8
-      Role: !GetAtt AVAIPollerRole.Arn
-      MemorySize: 1024
-      Timeout: 180
-      CodeUri: source/
-      Layers:
-        - !Ref AVAILambdaLayer
-      Environment:
-        Variables:
-          VEEVA_DOMAIN_NAME: !Ref VeevaDomainNameParameter
-          VEEVA_DOMAIN_USERNAME: !Ref VeevaDomainUserNameParameter
-          VEEVA_DOMAIN_PASSWORD: !Ref VeevaDomainPasswordParameter
-          BUCKETNAME: !Ref AVAIBucket
-          QUEUE_NAME: !GetAtt AVAIQueue.QueueName
 
   AVAICustomFieldPopulator:
     Type: AWS::Serverless::Function
@@ -316,16 +303,25 @@ Resources:
         - !Ref AVAILambdaLayer
       Environment:
         Variables:
-          VEEVA_DOMAIN_NAME: !Ref VeevaDomainNameParameter
-          VEEVA_DOMAIN_USERNAME: !Ref VeevaDomainUserNameParameter
-          VEEVA_DOMAIN_PASSWORD: !Ref VeevaDomainPasswordParameter
-          VEEVA_CUSTOM_FIELD_NAME: !Ref VeevaCustomFieldName
+          VEEVA_DOMAIN_NAME_SECRET: !Ref DomainSecret
+          VEEVA_DOMAIN_USERNAME_SECRET: !Ref DomainUsernameSecret
+          VEEVA_DOMAIN_PASSWORD_SECRET: !Ref DomainPasswordSecret
+          VEEVA_CUSTOM_FIELD_NAME_SECRET: !Ref CustomFieldSecret
 
   AVAIDeadLetterQueue:
     Type: AWS::SQS::Queue
     Properties:
       ReceiveMessageWaitTimeSeconds: 5
       VisibilityTimeout: 120
+      KmsMasterKeyId: alias/aws/sqs
+
+  AVAIFifoDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: True
+      ReceiveMessageWaitTimeSeconds: 5
+      VisibilityTimeout: 120
+      KmsMasterKeyId: alias/aws/sqs
 
   AVAIQueuePoller:
     Type: AWS::Serverless::Function
@@ -359,7 +355,7 @@ Resources:
       CodeUri: source/
       Environment:
         Variables:
-          ES_DOMAIN: !GetAtt AVAIESDomain.DomainEndpoint
+          ES_DOMAIN: !GetAtt AVAIOSDomain.DomainEndpoint
 
   AVAIAppFlowListener:
     Type: AWS::Serverless::Function
@@ -404,18 +400,25 @@ Resources:
           KeyType: "HASH"
       StreamSpecification:
         StreamViewType: NEW_IMAGE
+      SSESpecification:
+        SSEEnabled: true
 
-  AVAIESDomain:
-    Type: AWS::Elasticsearch::Domain
+  AVAIOSDomain:
+    Type: AWS::OpenSearchService::Domain
     Properties:
-      ElasticsearchClusterConfig:
-        DedicatedMasterEnabled: "false"
-        InstanceCount: "1"
-        ZoneAwarenessEnabled: "false"
-        InstanceType: "r5.large.elasticsearch"
-        # DedicatedMasterType: "r5.large.elasticsearch"
-        # DedicatedMasterCount: "2"
-      ElasticsearchVersion: "7.4"
+      DomainName: tag-explorer
+      ClusterConfig:
+        DedicatedMasterEnabled: false
+        InstanceCount: 1
+        ZoneAwarenessEnabled: false
+        InstanceType: r5.large.search
+      EngineVersion: OpenSearch_1.2
+      EncryptionAtRestOptions:
+        Enabled: true
+      NodeToNodeEncryptionOptions:
+        Enabled: true
+      DomainEndpointOptions:
+        EnforceHTTPS: true
       EBSOptions:
         EBSEnabled: true
         Iops: 0
@@ -424,11 +427,11 @@ Resources:
       AccessPolicies:
         Version: "2012-10-17"
         Statement:
-          - Effect: "Allow"
+          - Effect: "Deny"
             Principal:
               AWS: "*"
             Action: "es:*"
-            Resource: "arn:aws:es:us-east-1:1234567890:domain/test/*" # dummy account
+            Resource: !Join [ ":", [ "arn:aws:es", !Ref "AWS::Region", !Ref "AWS::AccountId", "domain/tag-explorer/*"]]
 
   AVAIQueue:
     Type: AWS::SQS::Queue
@@ -436,6 +439,10 @@ Resources:
       ReceiveMessageWaitTimeSeconds: 5
       VisibilityTimeout: 120
       FifoQueue: True
+      RedrivePolicy: 
+        deadLetterTargetArn: !GetAtt AVAIFifoDeadLetterQueue.Arn
+        maxReceiveCount: 3
+      KmsMasterKeyId: alias/aws/sqs
 
   AVAIEventSourceMapping:
     Type: AWS::Lambda::EventSourceMapping
@@ -451,25 +458,6 @@ Resources:
       FunctionName: !GetAtt AVAICustomFieldPopulator.Arn
       StartingPosition: "TRIM_HORIZON"
 
-  AVAIPollerSchedule:
-    Type: AWS::Events::Rule
-    Properties:
-      Description: "Event Rule to call AVAIVeevaPoller every 5 mins"
-      ScheduleExpression: "cron(0/5 * * * ? *)"
-      State: DISABLED
-      Targets:
-        - Arn: !GetAtt AVAIPoller.Arn
-          Id: "Id123"
-    DependsOn: AVAIESDomain
-
-  AVAIPollerSchedulePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !GetAtt AVAIPoller.Arn
-      Principal: events.amazonaws.com
-      SourceArn: !GetAtt AVAIPollerSchedule.Arn
-
   AVAIQueuePollerSchedule:
     Type: AWS::Events::Rule
     Properties:
@@ -479,7 +467,7 @@ Resources:
       Targets:
         - Arn: !GetAtt AVAIQueuePoller.Arn
           Id: "Id124"
-    DependsOn: AVAIESDomain
+    DependsOn: AVAIOSDomain
 
   AVAIQueuePollerSchedulePermission:
     Type: AWS::Lambda::Permission
@@ -650,6 +638,34 @@ Resources:
       TriggerConfig:
         TriggerType: OnDemand
 
+  DomainUsernameSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties: 
+      Description: Veeva domain username.
+      Name: UsernameSecret
+      SecretString: !Ref VeevaDomainUserNameParameter
+
+  DomainPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties: 
+      Description: Veeva domain password.
+      Name: DomainPasswordSecret
+      SecretString: !Ref VeevaDomainPasswordParameter
+
+  DomainSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties: 
+      Description: Veeva domain name.
+      Name: DomainSecret
+      SecretString: !Ref VeevaDomainNameParameter
+
+  CustomFieldSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties: 
+      Description: The custom document field configured in Veeva vault to be populated with tags.
+      Name: CustomFieldSecret
+      SecretString: !Ref VeevaCustomFieldName
+
 Outputs:
   ESDomainAccessPrincipal:
     Description: The IAM role of AVAIPopulateESRole role
@@ -657,4 +673,4 @@ Outputs:
 
   ESDomainEndPoint:
     Description: The domain endpoint for ES cluster
-    Value: !GetAtt AVAIESDomain.DomainEndpoint
+    Value: !GetAtt AVAIOSDomain.DomainEndpoint

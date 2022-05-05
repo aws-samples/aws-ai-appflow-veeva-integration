@@ -1,40 +1,37 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-  
 #   Licensed under the Apache License, Version 2.0 (the "License").
 #   You may not use this file except in compliance with the License.
 #   A copy of the License is located at
-  
 #       http://www.apache.org/licenses/LICENSE-2.0
-  
-#   or in the "license" file accompanying this file. This file is distributed 
-#   on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either 
-#   express or implied. See the License for the specific language governing 
+#   or in the "license" file accompanying this file. This file is distributed
+#   on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+#   express or implied. See the License for the specific language governing
 #   permissions and limitations under the License.
 
 import sys
-sys.path.insert(0, '/opt')
+import os
+from urllib.parse import unquote_plus
 import boto3
 import requests
 from requests_aws4auth import AWS4Auth
-from urllib.parse import unquote_plus
-import json
-import os
 
-my_session = boto3.session.Session()
-region = my_session.region_name
+sys.path.insert(0, '/opt')
+
+SERVICE = 'es'
+HOST =  f"https://{unquote_plus(os.environ['ES_DOMAIN'])}"
+INDEX = 'avai_index'
+TYPE = '_doc'
+DOC_URL = HOST + '/' + INDEX + '/' + TYPE + '/'
+INDEX_URL = HOST+ '/' + INDEX
+HEADERS = { "Content-Type": "application/json" }
 
 # variables that will be used in the code
-service = 'es'
+my_session = boto3.session.Session()
+region = my_session.region_name
 credentials = boto3.Session().get_credentials()
-awsauth = AWS4Auth(credentials.access_key, credentials.secret_key, region, service, session_token=credentials.token)
-host =  'https://{0}'.format(unquote_plus(os.environ['ES_DOMAIN']))
-index = 'avai_index'
-type = '_doc'
-docurl = host + '/' + index + '/' + type + '/'
-indexurl = host+ '/' + index
-headers = { "Content-Type": "application/json" }
+awsauth = AWS4Auth(credentials.access_key, credentials.secret_key, region, SERVICE, session_token=credentials.token)
 
-index_body = {
+INDEX_BODY = {
     "mappings": {
       "properties": {
         "ROWID": {
@@ -69,20 +66,20 @@ index_body = {
   }
 
 def lambda_handler(event, context):
-    
+
     # Check if index exists
-    response = requests.get(indexurl, auth=awsauth, headers=headers)
+    response = requests.get(INDEX_URL, auth=awsauth, headers=HEADERS)
     if not response.ok:
         # create index
-        response = requests.put(indexurl, auth=awsauth, json=index_body, headers=headers)
-    
+        response = requests.put(INDEX_URL, auth=awsauth, json=INDEX_BODY, headers=HEADERS)
+
     count = 0
     for record in event['Records']:
         # Get the primary key for use as the Elasticsearch ID
-        id = record['dynamodb']['Keys']['ROWID']['S'] 
-        
+        es_id = record['dynamodb']['Keys']['ROWID']['S']
+
         if record['eventName'] == 'REMOVE':
-            r = requests.delete(docurl + id, auth=awsauth)
+            requests.delete(DOC_URL + es_id, auth=awsauth)
         else:
             document = record['dynamodb']['NewImage']
             # create index document
@@ -99,7 +96,7 @@ def lambda_handler(event, context):
                 item['Value'] = document['Value']['S']
             item['Location'] = document['Location']['S']
             # print(json.dumps(item))
-            r = requests.put(docurl + id, auth=awsauth, json=item, headers=headers)
+            requests.put(DOC_URL + es_id, auth=awsauth, json=item, headers=HEADERS)
         count += 1
         print(str(count) + ' records processed.')
     return str(count) + ' records processed.'

@@ -131,3 +131,7 @@ You use SAM to deploy the solution. SAM creates all the necessary resources, inc
 ## License
 
 This library is licensed under the Apache 2.0 License. 
+
+## Terms and Conditions
+
+This solution uses the face detection feature of Amazon Rekognition. Please review the [Terms and Conditions](https://aws.amazon.com/service-terms/) for the service. 
