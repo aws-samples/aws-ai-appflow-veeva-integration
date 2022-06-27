@@ -127,6 +127,7 @@ You use SAM to deploy the solution. SAM creates all the necessary resources, inc
 
 ## Further Reading:
 1. Previous blogpost: [Analyzing and tagging assets stored in Veeva Vault PromoMats using Amazon AI services](https://aws.amazon.com/blogs/machine-learning/analyzing-and-tagging-assets-stored-in-veeva-vault-promomats-using-amazon-ai-services/)
+2. New blogpost: [Analyze and tag assets stored in Veeva Vault PromoMats using Amazon AppFlow and Amazon AI Services](https://aws.amazon.com/blogs/machine-learning/analyze-and-tag-assets-stored-in-veeva-vault-promomats-using-amazon-appflow-and-amazon-ai-services/)
 
 ## License
 
