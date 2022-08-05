@@ -82,7 +82,8 @@ Resources:
       PolicyDocument: 
         Version: 2012-10-17
         Statement:
-          - Action: 
+          - Sid: AllowAppFlow
+            Action: 
               - s3:PutObject
               - s3:AbortMultipartUpload
               - s3:ListMultipartUploadParts
@@ -96,7 +97,16 @@ Resources:
             Resource:
               - !GetAtt AVAIBucket.Arn
               - !Join [ "/", [!GetAtt AVAIBucket.Arn, "*"]]
-
+          - Sid: AllowSSLRequestsOnly
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt AVAIBucket.Arn
+              - !Join [ "/", [!GetAtt AVAIBucket.Arn, "*"]]
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
   AVAICustomFieldPopulatorRole:
     Type: "AWS::IAM::Role"
     Properties:
