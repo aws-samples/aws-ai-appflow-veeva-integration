@@ -20,7 +20,6 @@ import boto3
 sys.path.insert(0, '/opt')
 
 # read the environment variables
-QUEUE_NAME = unquote_plus(os.environ['QUEUE_NAME'])
 DDB_TABLE = unquote_plus(os.environ['DDB_TABLE'])
 
 current_region = boto3.session.Session().region_name
@@ -32,77 +31,73 @@ hera  = boto3.client(service_name='comprehendmedical', use_ssl=True, region_name
 textract = boto3.client('textract',region_name= current_region)
 transcribe = boto3.client('transcribe',region_name=current_region)
 s3 = boto3.resource('s3')
+s3_client = boto3.client('s3')
 
 table = dynamoDBResource.Table(DDB_TABLE)
 
-
 def lambda_handler(event, context):
 
-    # get the queue URL
-    queue_url = sqs.get_queue_url(
-                            QueueName=QUEUE_NAME
-                        )['QueueUrl']
+    print(event)
 
-    # Receive messages from SQS queue
-    response = sqs.receive_message(
-        QueueUrl=queue_url,
-        MaxNumberOfMessages=10,
-        MessageAttributeNames=[
-            'All'
-        ],
-        VisibilityTimeout=90,
-        WaitTimeSeconds=3
-    )
+    for record in event['Records']:
+        bucket = record['s3']['bucket']['name']
+        key = record['s3']['object']['key']
 
-    if 'Messages' in response:
-        print (f"Found {str(len(response['Messages']))} messages, processing")
-        for message in response['Messages']:
-            print(message)
-            receipt_handle = message['ReceiptHandle']
-            message_body = json.loads(message['Body'])
+        print(bucket)
+        print(key)
 
-            try:
-                if (message_body['keyName'].lower().endswith('.jpg') 
-                        or message_body['keyName'].lower().endswith('.jpeg') 
-                        or message_body['keyName'].lower().endswith('.png')):
-                    # Process the image.
-                    process_image(message_body)
+        metadata = s3_client.head_object(Bucket=bucket, Key=key)
+        
+        print(metadata)
+        
+        document_type = metadata['ContentType']
+        
+        print(document_type)
 
-                if (message_body['keyName'].lower().endswith('.txt')):
-                    print(f"Processing Document: {message_body['bucketName']}/{message_body['keyName']}")
-                    #get the S3 object
-                    bucket = s3.Bucket(message_body['bucketName'])
-                    file_text = bucket.Object(message_body['keyName']).get()['Body'].read().decode("utf-8", 'ignore')
-                    # Process the text document.
-                    process_document(message_body, file_text, 'Text-file')
+        message_body = {
+            'bucketName': bucket,
+            'keyName': key
+        }
 
-                if (message_body['keyName'].lower().endswith('.pdf')):
-                    # process PDF
-                    process_pdf(message_body)
+        print(message_body)
 
-                if (message_body['keyName'].lower().endswith('.mp3') 
-                    or message_body['keyName'].lower().endswith('.mp4') 
-                    or message_body['keyName'].lower().endswith('.flac') 
-                    or message_body['keyName'].lower().endswith('.wav')
-                    or message_body['keyName'].lower().endswith('.ogg')
-                    or message_body['keyName'].lower().endswith('.webm')
-                    or message_body['keyName'].lower().endswith('.amr')
-                    ):
-                    # process Audio
-                    process_audio(message_body)
+        try:
+            if (message_body['keyName'].lower().endswith('.jpg') 
+                    or message_body['keyName'].lower().endswith('.jpeg') 
+                    or message_body['keyName'].lower().endswith('.png')):
+                # Process the image.
+                process_image(message_body)
 
-            except Exception as ex:
-                print("Something went wrong processing " + str(message_body['keyName']))
-                print(ex)
+            if (message_body['keyName'].lower().endswith('.txt')):
+                print(f"Processing Document: {message_body['bucketName']}/{message_body['keyName']}")
+                #get the S3 object
+                bucket = s3.Bucket(message_body['bucketName'])
+                file_text = bucket.Object(message_body['keyName']).get()['Body'].read().decode("utf-8", 'ignore')
+                # Process the text document.
+                process_document(message_body, file_text, 'Text-file')
 
-            # Delete received message from queue
-            sqs.delete_message(
-                QueueUrl=queue_url,
-                ReceiptHandle=receipt_handle
-            )
-            # print('Received and deleted message: %s' % message)
-    else:
-        print ('No messages found in queue.')
+            if (message_body['keyName'].lower().endswith('.pdf')):
+                # process PDF
+                process_pdf(message_body)
+
+            if (message_body['keyName'].lower().endswith('.mp3') 
+                or message_body['keyName'].lower().endswith('.mp4') 
+                or message_body['keyName'].lower().endswith('.flac') 
+                or message_body['keyName'].lower().endswith('.wav')
+                or message_body['keyName'].lower().endswith('.ogg')
+                or message_body['keyName'].lower().endswith('.webm')
+                or message_body['keyName'].lower().endswith('.amr')
+                ):
+                # process Audio
+                process_audio(message_body)
+
+        except Exception as ex:
+            print("Something went wrong processing " + str(message_body['keyName']))
+            print(ex)
+
+
+    return 1
+
 
 def process_audio(message_body):
     if message_body is not None:
@@ -393,5 +388,5 @@ def generate_base_item(message_body, asset_type = None, operation = None):
             'AssetType': asset_type,
             'Operation': operation,
             'TimeStamp': timestamp,
-            'DocumentId': message_body['documentId']
+            'DocumentId': message_body['bucketName'] + '/' + message_body['keyName']
     }

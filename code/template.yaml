@@ -15,54 +15,19 @@ AWSTemplateFormatVersion: 2010-09-09
 Transform: AWS::Serverless-2016-10-31
 
 Parameters:
-  VeevaDomainNameParameter:
+  BucketName:
+    Description: S3 Bucket name - MAKE SURE this is unique!
     Type: String
-    Description: Enter Veeva domain name you want to connect to.
-    MaxLength: 30
-    MinLength: 3
-    NoEcho: True
-
-  VeevaDomainUserNameParameter:
-    Type: String
-    Description: Enter the user name of the domain.
-    MaxLength: 30
-    MinLength: 3
-    NoEcho: True
-
-  VeevaDomainPasswordParameter:
-    Type: String
-    Description: Enter the password for the domain.
-    MaxLength: 30
-    MinLength: 3
-    NoEcho: True
-
-  VeevaCustomFieldName:
-    Type: String
-    Description: Enter the custom document field configured in Veeva vault.
-    MaxLength: 30
-    MinLength: 3
-
-Metadata:
-  AWS::CloudFormation::Interface:
-    ParameterGroups:
-      - Label:
-          default: "Veeva Configuration"
-        Parameters:
-          - VeevaDomainNameParameter
-          - VeevaDomainUserNameParameter
-          - VeevaDomainPasswordParameter
-    ParameterLabels:
-      VeevaDomainNameParameter:
-        default: "Which Veeva domain should this connect to?"
-      VeevaDomainUserNameParameter:
-        default: "What Veeva username should be used?"
-      VeevaDomainPasswordParameter:
-        default: "What Veeva password should be used?"
 
 Resources:
   AVAIBucket:
     Type: AWS::S3::Bucket
     Properties:
+      BucketName: !Ref BucketName
+      NotificationConfiguration:
+        LambdaConfigurations:
+        - Event: 's3:ObjectCreated:*'
+          Function: !GetAtt AVAIS3Listener.Arn
       BucketEncryption:
           ServerSideEncryptionConfiguration:
             - BucketKeyEnabled: true
@@ -107,57 +72,17 @@ Resources:
             Condition:
               Bool:
                 'aws:SecureTransport': false
-  AVAICustomFieldPopulatorRole:
-    Type: "AWS::IAM::Role"
+
+  BucketPermission:
+    Type: AWS::Lambda::Permission
     Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: "Allow"
-            Principal:
-              Service:
-                - lambda.amazonaws.com
-                - dynamodb.amazonaws.com
-            Action: "sts:AssumeRole"
-      Path: "/"
-      Policies:
-        - PolicyName: "AccessDDBStream"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: "Allow"
-                Action:
-                  - "dynamodb:GetRecords"
-                  - "dynamodb:GetShardIterator"
-                  - "dynamodb:DescribeStream"
-                  - "dynamodb:ListStreams"
-                Resource: !GetAtt AVAIDDBTable.StreamArn
-        - PolicyName: "WritetoSQS"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: "Allow"
-                Action:
-                  - "sqs:SendMessage"
-                  - "sqs:GetQueueUrl"
-                Resource: !GetAtt AVAIDeadLetterQueue.Arn
-        - PolicyName: "GetSecret"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: "Allow"
-                Action:
-                  - "secretsmanager:GetSecretValue"
-                Resource: 
-                  - !Ref DomainSecret
-                  - !Ref DomainUsernameSecret
-                  - !Ref DomainPasswordSecret
-                  - !Ref CustomFieldSecret
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref AVAIS3Listener
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref "AWS::AccountId"
+      SourceArn: !Sub "arn:aws:s3:::${BucketName}"
 
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-
-  AVAIQueuePollerRole:
+  AVAIS3ListenerRole:
     Type: "AWS::IAM::Role"
     Properties:
       AssumeRolePolicyDocument:
@@ -179,19 +104,11 @@ Resources:
                   - "S3:GetObject"
                   - "S3:DeleteObject"
                   - "S3:PutObject"
-                Resource: !Sub
-                  - ${bucketARN}/*
-                  - { bucketARN: !GetAtt AVAIBucket.Arn }
-        - PolicyName: "ReadDeletetoSQS"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
+                Resource: !Sub "arn:aws:s3:::${BucketName}/*"
               - Effect: "Allow"
                 Action:
-                  - "sqs:DeleteMessage"
-                  - "sqs:ReceiveMessage"
-                  - "sqs:GetQueueUrl"
-                Resource: !GetAtt AVAIQueue.Arn
+                  - "S3:ListBucket"
+                Resource: !Sub "arn:aws:s3:::${BucketName}"
         - PolicyName: "WritetoDDB"
           PolicyDocument:
             Version: "2012-10-17"
@@ -217,129 +134,13 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
 
-  AVAIPopulateESRole:
-    Type: "AWS::IAM::Role"
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: "Allow"
-            Principal:
-              Service:
-                - lambda.amazonaws.com
-                - dynamodb.amazonaws.com
-            Action: "sts:AssumeRole"
-      Path: "/"
-      Policies:
-        - PolicyName: "WriteToES"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: "Allow"
-                Action: "es:ESHttp*"
-                Resource: !GetAtt AVAIOSDomain.Arn
-        - PolicyName: "AccessDDBStream"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: "Allow"
-                Action:
-                  - "dynamodb:GetRecords"
-                  - "dynamodb:GetShardIterator"
-                  - "dynamodb:DescribeStream"
-                  - "dynamodb:ListStreams"
-                Resource: !GetAtt AVAIDDBTable.StreamArn
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-
-  AVAIAppFlowListenerRole:
-    Type: "AWS::IAM::Role"
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: "Allow"
-            Principal:
-              Service:
-                - lambda.amazonaws.com
-            Action: "sts:AssumeRole"
-      Path: "/"
-      Policies:
-        - PolicyName: "ReadWriteToS3"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: "Allow"
-                Action: "S3:PutObject"
-                Resource: !Sub
-                  - ${bucketARN}/*
-                  - { bucketARN: !GetAtt AVAIBucket.Arn }
-              - Effect: "Allow"
-                Action:
-                  - "S3:GetObject"
-                  - "S3:ListBucket"
-                Resource:
-                  - !Sub
-                    - ${bucketARN}/*
-                    - { bucketARN: !GetAtt AVAIBucket.Arn }
-                  - !GetAtt AVAIBucket.Arn
-        - PolicyName: "WriteToSQS"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: "Allow"
-                Action:
-                  - "sqs:SendMessage"
-                  - "sqs:GetQueueUrl"
-                Resource: !GetAtt AVAIQueue.Arn
-
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-
-  AVAICustomFieldPopulator:
+  AVAIS3Listener:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: AVAICustomFieldPopulator.lambda_handler
-      Description: "Lambda function to populate extracted metadata back to a Veeva Vault document custom field."
-      DeadLetterQueue:
-        TargetArn: !GetAtt AVAIDeadLetterQueue.Arn
-        Type: SQS
+      Handler: AVAIS3Listener.lambda_handler
+      Description: "Lambda function to listen for S3 object operations"
       Runtime: python3.8
-      Role: !GetAtt AVAICustomFieldPopulatorRole.Arn
-      MemorySize: 1024
-      Timeout: 180
-      CodeUri: source/
-      Layers:
-        - !Ref AVAILambdaLayer
-      Environment:
-        Variables:
-          VEEVA_DOMAIN_NAME_SECRET: !Ref DomainSecret
-          VEEVA_DOMAIN_USERNAME_SECRET: !Ref DomainUsernameSecret
-          VEEVA_DOMAIN_PASSWORD_SECRET: !Ref DomainPasswordSecret
-          VEEVA_CUSTOM_FIELD_NAME_SECRET: !Ref CustomFieldSecret
-
-  AVAIDeadLetterQueue:
-    Type: AWS::SQS::Queue
-    Properties:
-      ReceiveMessageWaitTimeSeconds: 5
-      VisibilityTimeout: 120
-      KmsMasterKeyId: alias/aws/sqs
-
-  AVAIFifoDeadLetterQueue:
-    Type: AWS::SQS::Queue
-    Properties:
-      FifoQueue: True
-      ReceiveMessageWaitTimeSeconds: 5
-      VisibilityTimeout: 120
-      KmsMasterKeyId: alias/aws/sqs
-
-  AVAIQueuePoller:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: AVAIQueuePoller.lambda_handler
-      Description: "Lambda function to poll SQS Queue and process"
-      Runtime: python3.8
-      Role: !GetAtt AVAIQueuePollerRole.Arn
+      Role: !GetAtt AVAIS3ListenerRole.Arn
       MemorySize: 1024
       Timeout: 300
       Layers:
@@ -348,40 +149,7 @@ Resources:
       Environment:
         Variables:
           DDB_TABLE: !Ref AVAIDDBTable
-          BUCKETNAME: !Ref AVAIBucket
-          QUEUE_NAME: !GetAtt AVAIQueue.QueueName
-
-  AVAIPopulateES:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: AVAIPopulateES.lambda_handler
-      Description: "Lambda function to read DDB stream and populate ES"
-      Runtime: python3.8
-      Role: !GetAtt AVAIPopulateESRole.Arn
-      MemorySize: 512
-      Timeout: 180
-      Layers:
-        - !Ref AVAILambdaLayer
-      CodeUri: source/
-      Environment:
-        Variables:
-          ES_DOMAIN: !GetAtt AVAIOSDomain.DomainEndpoint
-
-  AVAIAppFlowListener:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: AVAIAppFlowListener.lambda_handler
-      Description: "Lambda function to listen for AppFlow executions"
-      Runtime: python3.8
-      Role: !GetAtt AVAIAppFlowListenerRole.Arn
-      MemorySize: 512
-      Timeout: 180
-      Layers:
-        - !Ref AVAILambdaLayer
-      CodeUri: source/
-      Environment:
-        Variables:
-          QUEUE_NAME: !GetAtt AVAIQueue.QueueName
+          BUCKETNAME: !Ref BucketName
 
   AVAILambdaLayer:
     Type: AWS::Serverless::LayerVersion
@@ -412,275 +180,3 @@ Resources:
         StreamViewType: NEW_IMAGE
       SSESpecification:
         SSEEnabled: true
-
-  AVAIOSDomain:
-    Type: AWS::OpenSearchService::Domain
-    Properties:
-      DomainName: tag-explorer
-      ClusterConfig:
-        DedicatedMasterEnabled: false
-        InstanceCount: 1
-        ZoneAwarenessEnabled: false
-        InstanceType: r5.large.search
-      EngineVersion: OpenSearch_1.2
-      EncryptionAtRestOptions:
-        Enabled: true
-      NodeToNodeEncryptionOptions:
-        Enabled: true
-      DomainEndpointOptions:
-        EnforceHTTPS: true
-      EBSOptions:
-        EBSEnabled: true
-        Iops: 0
-        VolumeSize: 10
-        VolumeType: "gp2"
-      AccessPolicies:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: "Deny"
-            Principal:
-              AWS: "*"
-            Action: "es:*"
-            Resource: !Join [ ":", [ "arn:aws:es", !Ref "AWS::Region", !Ref "AWS::AccountId", "domain/tag-explorer/*"]]
-
-  AVAIQueue:
-    Type: AWS::SQS::Queue
-    Properties:
-      ReceiveMessageWaitTimeSeconds: 5
-      VisibilityTimeout: 120
-      FifoQueue: True
-      RedrivePolicy: 
-        deadLetterTargetArn: !GetAtt AVAIFifoDeadLetterQueue.Arn
-        maxReceiveCount: 3
-      KmsMasterKeyId: alias/aws/sqs
-
-  AVAIEventSourceMapping:
-    Type: AWS::Lambda::EventSourceMapping
-    Properties:
-      EventSourceArn: !GetAtt AVAIDDBTable.StreamArn
-      FunctionName: !GetAtt AVAIPopulateES.Arn
-      StartingPosition: "TRIM_HORIZON"
-
-  AVAIEventSourceMappingForPopulator:
-    Type: AWS::Lambda::EventSourceMapping
-    Properties:
-      EventSourceArn: !GetAtt AVAIDDBTable.StreamArn
-      FunctionName: !GetAtt AVAICustomFieldPopulator.Arn
-      StartingPosition: "TRIM_HORIZON"
-
-  AVAIQueuePollerSchedule:
-    Type: AWS::Events::Rule
-    Properties:
-      Description: "Event Rule to call AVAIQueuePoller every 1 min"
-      ScheduleExpression: "cron(0/1 * * * ? *)"
-      State: DISABLED
-      Targets:
-        - Arn: !GetAtt AVAIQueuePoller.Arn
-          Id: "Id124"
-    DependsOn: AVAIOSDomain
-
-  AVAIQueuePollerSchedulePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !GetAtt AVAIQueuePoller.Arn
-      Principal: events.amazonaws.com
-      SourceArn: !GetAtt AVAIQueuePollerSchedule.Arn
-
-  AVAIAppFlowRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Description: "Event Rule to call Lambda Function every time an AppFlow flow run is finished"
-      EventPattern:
-        {
-          "source": ["aws.appflow"],
-          "detail-type": ["AppFlow End Flow Run Report"],
-        }
-      State: ENABLED
-      Targets:
-        - Arn: !GetAtt AVAIAppFlowListener.Arn
-          Id: "Id125"
-
-  AVAIAppFlowRulePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !GetAtt AVAIAppFlowListener.Arn
-      Principal: events.amazonaws.com
-      SourceArn: !GetAtt AVAIAppFlowRule.Arn
-
-  VeevaAppFlowConnectorProfile:
-    Type: AWS::AppFlow::ConnectorProfile
-    Properties:
-      ConnectionMode: Public
-      ConnectorProfileConfig:
-        ConnectorProfileCredentials:
-          Veeva:
-            Password: !Ref VeevaDomainPasswordParameter
-            Username: !Ref VeevaDomainUserNameParameter
-        ConnectorProfileProperties:
-          Veeva:
-            InstanceUrl:
-              !Join [
-                "",
-                ["https://", !Ref VeevaDomainNameParameter, ".veevavault.com"],
-              ]
-      ConnectorProfileName: veeva-aws-connector
-      ConnectorType: Veeva
-
-  VeevaAppFlowFlow:
-    Type: AWS::AppFlow::Flow
-    Properties:
-      Description: Imports documents from Veeva into an Amazon S3 bucket
-      DestinationFlowConfigList:
-        - ConnectorType: S3
-          DestinationConnectorProperties:
-            S3:
-              BucketName: !Ref AVAIBucket
-              BucketPrefix: appflow
-              S3OutputFormatConfig:
-                FileType: JSON
-                PrefixConfig:
-                  PrefixType: PATH
-                  PrefixFormat: HOUR
-                AggregationConfig:
-                  AggregationType: None
-      FlowName: import-veeva-documents
-      SourceFlowConfig:
-        ConnectorProfileName: !Ref VeevaAppFlowConnectorProfile
-        ConnectorType: Veeva
-        SourceConnectorProperties:
-          Veeva:
-            Object: documents/types/component__c
-            DocumentType: Component
-            IncludeSourceFiles: true
-            IncludeRenditions: false
-            IncludeAllVersions: false
-      Tasks:
-        - TaskType: Filter
-          SourceFields:
-            - id
-            - format__v
-            - filename__v
-            - major_version_number__v
-            - minor_version_number__v
-            - version_modified_date__v
-            - version_creation_date__v
-          ConnectorOperator:
-            Veeva: PROJECTION
-        - TaskType: Map
-          SourceFields:
-            - id
-          TaskProperties:
-            - Key: SOURCE_DATA_TYPE
-              Value: id
-            - Key: DESTINATION_DATA_TYPE
-              Value: id
-          DestinationField: id
-          ConnectorOperator:
-            Veeva: NO_OP
-        - TaskType: Map
-          SourceFields:
-            - format__v
-          TaskProperties:
-            - Key: SOURCE_DATA_TYPE
-              Value: ExactMatchString
-            - Key: DESTINATION_DATA_TYPE
-              Value: String
-          DestinationField: format__v
-          ConnectorOperator:
-            Veeva: NO_OP
-        - TaskType: Map
-          SourceFields:
-            - filename__v
-          TaskProperties:
-            - Key: SOURCE_DATA_TYPE
-              Value: ExactMatchString
-            - Key: DESTINATION_DATA_TYPE
-              Value: String
-          DestinationField: filename__v
-          ConnectorOperator:
-            Veeva: NO_OP
-        - TaskType: Map
-          SourceFields:
-            - major_version_number__v
-          TaskProperties:
-            - Key: SOURCE_DATA_TYPE
-              Value: Number
-            - Key: DESTINATION_DATA_TYPE
-              Value: Number
-          DestinationField: major_version_number__v
-          ConnectorOperator:
-            Veeva: NO_OP
-        - TaskType: Map
-          SourceFields:
-            - minor_version_number__v
-          TaskProperties:
-            - Key: SOURCE_DATA_TYPE
-              Value: Number
-            - Key: DESTINATION_DATA_TYPE
-              Value: Number
-          DestinationField: minor_version_number__v
-          ConnectorOperator:
-            Veeva: NO_OP
-        - TaskType: Map
-          SourceFields:
-            - version_modified_date__v
-          TaskProperties:
-            - Key: SOURCE_DATA_TYPE
-              Value: datetime
-            - Key: DESTINATION_DATA_TYPE
-              Value: datetime
-          DestinationField: version_modified_date__v
-          ConnectorOperator:
-            Veeva: NO_OP
-        - TaskType: Map
-          SourceFields:
-            - version_creation_date__v
-          TaskProperties:
-            - Key: SOURCE_DATA_TYPE
-              Value: datetime
-            - Key: DESTINATION_DATA_TYPE
-              Value: datetime
-          DestinationField: version_creation_date__v
-          ConnectorOperator:
-            Veeva: NO_OP
-      TriggerConfig:
-        TriggerType: OnDemand
-
-  DomainUsernameSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties: 
-      Description: Veeva domain username.
-      Name: UsernameSecret
-      SecretString: !Ref VeevaDomainUserNameParameter
-
-  DomainPasswordSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties: 
-      Description: Veeva domain password.
-      Name: DomainPasswordSecret
-      SecretString: !Ref VeevaDomainPasswordParameter
-
-  DomainSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties: 
-      Description: Veeva domain name.
-      Name: DomainSecret
-      SecretString: !Ref VeevaDomainNameParameter
-
-  CustomFieldSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties: 
-      Description: The custom document field configured in Veeva vault to be populated with tags.
-      Name: CustomFieldSecret
-      SecretString: !Ref VeevaCustomFieldName
-
-Outputs:
-  ESDomainAccessPrincipal:
-    Description: The IAM role of AVAIPopulateESRole role
-    Value: !GetAtt AVAIPopulateESRole.Arn
-
-  ESDomainEndPoint:
-    Description: The domain endpoint for ES cluster
-    Value: !GetAtt AVAIOSDomain.DomainEndpoint
